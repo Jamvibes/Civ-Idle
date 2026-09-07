@@ -13,25 +13,42 @@ import {
   Network,
   BookOpen,
   CircleHelp,
+  Settings,
   Pause,
   Play,
 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { createSaveStore } from '@/lib/save-store.mjs';
+import { Switch } from '@/components/ui/switch';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
+import DiscoveryCelebrations from '@/components/discovery-celebrations';
+import ConceptMap from '@/components/concept-map';
 import { Progress } from '@/components/ui/progress';
 import {
   initialState,
+  compendium,
+  restartGame,
   jobs,
   technologies,
   resources,
   eras,
   advance,
   assign,
-  recruit,
-  research,
-  build,
+  visibleConcepts,
   ratePreview,
   workerCost,
-  buildingCost,
   housing,
   capacity,
   unlocked,
@@ -50,15 +67,32 @@ export default function Home() {
   const [game, setGame] = useState<Game>(initialState);
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState(
-    'Assign your people to begin. Food brings new settlers; knowledge opens new possibilities.',
+    'Assign your people to begin. Gather food and explore the world around your village.',
   );
   const [help, setHelp] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [restartOpen, setRestartOpen] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState('');
+  const [mapSession, setMapSession] = useState(0);
+  const showHuntingGuide = game.settings?.showHuntingGuide ?? true;
+  const setHuntingGuide = (show: boolean) =>
+    setGame((g) => ({
+      ...g,
+      settings: { ...g.settings, showHuntingGuide: show },
+    }));
+  const [saveLabel, setSaveLabel] = useState('Loading settlement');
+  const [saveBlocked, setSaveBlocked] = useState(false);
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('civ-idle-v1');
-      if (raw) {
-        const g = JSON.parse(raw);
-        if (validSave(g)) {
+    let cancelled = false;
+    const store = createSaveStore(window);
+    (async () => {
+      try {
+        const raw = await store.load();
+        if (cancelled) return;
+        if (raw) {
+          const g = JSON.parse(raw);
+          if (!validSave(g)) throw new Error('Unsupported or damaged save');
           const elapsed = Math.min(
             28800,
             Math.max(0, (Date.now() - g.savedAt) / 1000),
@@ -66,14 +100,26 @@ export default function Home() {
           setGame(advance(g, elapsed));
           if (elapsed > 60)
             setNotice(
-              `Welcome back. ${g.paused ? 'Time remained paused.' : `Your settlement worked for ${Math.floor(elapsed / 60)} minutes (up to 8 hours).`}`,
+              g.paused
+                ? 'Welcome back. Time remained paused.'
+                : 'Welcome back. Your village continued working while you were away.',
             );
         }
+        setSaveLabel(store.label);
+        setReady(true);
+      } catch {
+        if (!cancelled) {
+          setSaveBlocked(true);
+          setSaveLabel('Save needs attention');
+          setNotice(
+            'Your existing save could not be loaded. It has been preserved; reload after resolving the save issue.',
+          );
+        }
       }
-    } catch {
-      setNotice('Your save could not be loaded. A fresh settlement is ready.');
-    }
-    setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
   useEffect(() => {
     if (!ready) return;
@@ -86,18 +132,60 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [ready]);
   useEffect(() => {
+    if (!ready || saveBlocked) return;
+    let cancelled = false;
+    const store = createSaveStore(window);
+    store
+      .save({ ...game, savedAt: Date.now() })
+      .then(() => {
+        if (!cancelled) setSaveLabel(store.label);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSaveLabel('Saving unavailable');
+          setNotice(
+            'Progress could not be saved. Keep the game open while resolving the storage issue.',
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [game, ready, saveBlocked]);
+  const previousDiscoveries = useRef<string[] | null>(null);
+  useEffect(() => {
     if (!ready) return;
-    try {
-      localStorage.setItem(
-        'civ-idle-v1',
-        JSON.stringify({ ...game, savedAt: Date.now() }),
-      );
-    } catch {
-      setNotice(
-        'Saving is unavailable in this browser. Keep this tab open to retain progress.',
-      );
+    const previous = previousDiscoveries.current;
+    if (previous) {
+      const added = game.tech.filter((id) => !previous.includes(id));
+      if (added.length)
+        setNotice(
+          'Your people discovered ' +
+            added
+              .map((id) => technologies.find((t) => t.id === id)?.name)
+              .join(', ') +
+            '. New possibilities have opened up.',
+        );
     }
-  }, [game, ready]);
+    previousDiscoveries.current = game.tech;
+  }, [game.tech, ready]);
+  const previousFinds = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    const found = game.discoveries || [];
+    if (previousFinds.current) {
+      const added = found.filter((id) => !previousFinds.current!.includes(id));
+      if (added.length)
+        setNotice(
+          'Discovered ' +
+            added
+              .map((id) => compendium.find((e) => e.id === id)?.name)
+              .join(', ') +
+            '. View your compendium.',
+        );
+    }
+    previousFinds.current = found;
+  }, [game.discoveries, ready]);
   const gameRef = useRef(game);
   gameRef.current = game;
   useEffect(() => {
@@ -145,11 +233,6 @@ export default function Home() {
   const idle =
     game.population - Object.values(game.workers).reduce((a, b) => a + b, 0);
   const { rates, blocked } = ratePreview(game);
-  const current = technologies.find(
-    (t) =>
-      !game.tech.includes(t.id) &&
-      t.requires.every((r) => game.tech.includes(r)),
-  );
   const era = Math.max(
     0,
     ...technologies.filter((t) => game.tech.includes(t.id)).map((t) => t.era),
@@ -158,8 +241,35 @@ export default function Home() {
     setGame(fn);
     if (msg) setNotice(msg);
   };
+  const confirmRestart = async () => {
+    if (restarting) return;
+    setRestarting(true);
+    setRestartError('');
+    setReady(false);
+    const fresh = restartGame(game);
+    try {
+      await createSaveStore(window).save(fresh);
+      previousDiscoveries.current = [];
+      setGame(fresh);
+      setMapSession((n) => n + 1);
+      setHelp(false);
+      setNotice(
+        'A new beginning. Assign your five settlers to grow your village.',
+      );
+      setRestartOpen(false);
+      setSettingsOpen(false);
+    } catch {
+      setRestartError(
+        'Could not save the restart. Your current village is still active. Please try again.',
+      );
+    } finally {
+      setReady(true);
+      setRestarting(false);
+    }
+  };
   return (
-    <div className="game-shell">
+    <div className="game-shell network-layout">
+      <DiscoveryCelebrations key={mapSession} game={game} ready={ready} />
       <header className="topbar">
         <a href="./" className="brand">
           <Landmark size={28} />
@@ -169,8 +279,15 @@ export default function Home() {
           <small>A CIVILIZATION IN THE MAKING</small>
         </a>
         <div className="top-actions">
+          <button
+            className="icon-button"
+            aria-label="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings size={19} />
+          </button>
           <span className="save-dot" />
-          {ready ? 'Saved on this device' : 'Loading settlement'}
+          {saveLabel}
           <button
             className="icon-button"
             aria-label={game.paused ? 'Resume game' : 'Pause game'}
@@ -187,6 +304,116 @@ export default function Home() {
           </button>
         </div>
       </header>
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="game-settings">
+          <DialogTitle>Settings</DialogTitle>
+          <DialogDescription>
+            Choose which guidance appears while you play.
+          </DialogDescription>
+          <div className="guide-setting">
+            <div>
+              <label htmlFor="hunting-guide">Explore hunting guide</label>
+              <p>Show the introductory guide when no map node is selected.</p>
+            </div>
+            <Switch
+              id="hunting-guide"
+              checked={showHuntingGuide}
+              disabled={!ready}
+              onCheckedChange={setHuntingGuide}
+            />
+          </div>
+          <div className="guide-setting">
+            <div>
+              <label htmlFor="auto-growth">Automatic population growth</label>
+              <p>
+                Spend the food threshold to welcome a new person. Excess food is
+                kept.
+              </p>
+            </div>
+            <Switch
+              id="auto-growth"
+              checked={game.settings?.autoGrowth !== false}
+              disabled={!ready}
+              onCheckedChange={(enabled) =>
+                setGame((g) => ({
+                  ...g,
+                  settings: {
+                    showHuntingGuide: g.settings?.showHuntingGuide ?? true,
+                    ...g.settings,
+                    autoGrowth: enabled,
+                  },
+                }))
+              }
+            />
+          </div>
+          <div className="restart-setting">
+            <div className="guide-setting">
+              <div>
+                <label htmlFor="settlement-needs">Settlement needs</label>
+                <p>
+                  Show useful prompts for workers, capacity, supplies and
+                  equipment.
+                </p>
+              </div>
+              <Switch
+                id="settlement-needs"
+                disabled={!ready}
+                checked={game.settings?.showSettlementNeeds !== false}
+                onCheckedChange={(show) =>
+                  setGame((g) => ({
+                    ...g,
+                    settings: {
+                      showHuntingGuide: g.settings?.showHuntingGuide ?? true,
+                      ...g.settings,
+                      showSettlementNeeds: show,
+                    },
+                  }))
+                }
+              />
+            </div>
+            <h3>Start over</h3>
+            <p>Begin again with five settlers and an undiscovered world.</p>
+            <button
+              className="restart-button"
+              disabled={!ready}
+              onClick={() => {
+                setRestartError('');
+                setRestartOpen(true);
+              }}
+            >
+              Restart game
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <AlertDialog
+        open={restartOpen}
+        onOpenChange={(open) => {
+          if (!restarting) setRestartOpen(open);
+        }}
+      >
+        <AlertDialogContent className="game-settings">
+          <AlertDialogTitle>Restart your village?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This replaces your saved village and resets all resources, workers,
+            buildings, discoveries and progress. Your guide preference stays
+            unchanged. This cannot be undone.
+          </AlertDialogDescription>
+          {restartError && <p role="alert">{restartError}</p>}
+          <div className="restart-actions">
+            <AlertDialogCancel disabled={restarting}>
+              Keep playing
+            </AlertDialogCancel>
+            <button
+              className="restart-button"
+              disabled={restarting}
+              onClick={confirmRestart}
+            >
+              {restarting ? 'Restarting…' : 'Restart from the beginning'}
+            </button>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="era-strip">
         {eras.map((e, i) => (
           <div
@@ -205,7 +432,7 @@ export default function Home() {
             THE STOCKPILE <span>PER SECOND</span>
           </div>
           {Object.entries(resources)
-            .filter(([k, r]) => r.era <= era || game.stock[k] > 0)
+            .filter(([k]) => visibleConcepts(game).has(k))
             .map(([k, r]) => (
               <div className="resource" key={k}>
                 <span className="resource-symbol" style={{ color: r.color }}>
@@ -265,49 +492,46 @@ export default function Home() {
             </div>
             <div className="work-count">
               <strong>{game.population - idle}</strong>
-              <span>working</span>
+              <span>assigned</span>
             </div>
             <div className="work-count idle">
               <strong>{idle}</strong>
               <span>unassigned</span>
             </div>
-            <button
-              className="primary"
-              disabled={
-                !ready ||
-                game.stock.food < workerCost(game) ||
-                game.population >= housing(game)
-              }
-              onClick={() =>
-                act(
-                  recruit,
-                  'A new settler has arrived. Assign them a job below.',
-                )
-              }
-            >
-              <Plus size={17} /> Recruit a settler
-              <small>{workerCost(game)} food</small>
-            </button>
+            <div className="work-count">
+              <strong>
+                {game.population >= housing(game)
+                  ? 'At capacity'
+                  : `${fmt(game.stock.food)} / ${workerCost(game)} food`}
+              </strong>
+              <span>
+                {game.settings?.autoGrowth === false
+                  ? 'growth paused'
+                  : 'next person · automatic'}
+              </span>
+            </div>
           </div>
           <div className="notice" role="status">
             <span>✦</span>
             {game.paused
-              ? 'Time is paused. Resume using the play button above.'
+              ? 'Time is paused. Assign people to Hunter or Gatherer, then press the play button above to begin.'
               : notice}
           </div>
           {help && (
             <div className="help">
               <strong>Build a civilization, one connection at a time.</strong>
               <p>
-                Assign gatherers and hunters for food, then recruit settlers.
-                Every person eats 0.15 food/s. Add woodcutters, stone
-                collectors, tool makers and thinkers to unlock agriculture.
-                Build homes to grow. Research spends resources once; jobs
-                continuously consume their listed inputs. Empty inputs slow that
-                job. Food shortages reduce non-food work to 25%; nobody dies.
-                Tools and clothing boost production; pottery increases storage.
-                Saves and up to 8 hours of offline progress stay in this
-                browser.
+                Assign gatherers and hunters for food. Each food threshold
+                automatically adds an unassigned settler and keeps any excess
+                food. Every person eats 0.15 food/s. Add woodcutters, stone
+                collectors and tool makers to develop your village. Discoveries
+                emerge automatically from lifetime production, without spending
+                resources. Jobs continuously consume their listed inputs. Empty
+                inputs slow that job. An empty food stockpile has no penalty.
+                Non-food jobs wait until food production exceeds village upkeep
+                and assigned job inputs. Food producers always work. Tools help
+                your people work more effectively. Saves and up to 8 hours of
+                offline progress stay in this browser.
               </p>
               <button onClick={() => setHelp(false)}>Got it</button>
             </div>
@@ -315,287 +539,124 @@ export default function Home() {
           <Tabs defaultValue="workers">
             <TabsList variant="line" className="main-tabs">
               <TabsTrigger value="workers">
-                <Users /> Workforce
+                <Network /> Settlement map
               </TabsTrigger>
               <TabsTrigger value="research">
-                <FlaskConical /> Research{' '}
-                <span className="tab-count">
-                  {game.tech.length}/{technologies.length}
-                </span>
+                <FlaskConical /> Discoveries{' '}
+                <span className="tab-count">{game.tech.length}</span>
               </TabsTrigger>
-              <TabsTrigger value="network">
-                <Network /> Supply network
+              <TabsTrigger value="compendium">
+                <BookOpen /> Compendium
               </TabsTrigger>
             </TabsList>
             <TabsContent value="workers">
+              <ConceptMap
+                key={mapSession}
+                game={game}
+                ready={ready}
+                blocked={blocked}
+                onChange={setGame}
+                showHuntingGuide={ready && showHuntingGuide}
+                onDismissGuide={() => setHuntingGuide(false)}
+              />
+            </TabsContent>
+            <TabsContent value="compendium">
               <div className="list-heading">
-                <h2>Give everyone a purpose</h2>
-                <span>Move workers freely with − and +</span>
+                <h2>Your compendium</h2>
+                <span>Discoveries from exploration</span>
               </div>
-              <div className="job-list">
-                {jobs
-                  .filter((j) => unlocked(game, j.tech))
-                  .map((j) => (
-                    <div className="job-row" key={j.id}>
-                      <div className={`job-icon ${j.group}`}>
-                        {j.group === 'food' ? (
-                          <Sprout />
-                        ) : j.group === 'gather' ? (
-                          <Pickaxe />
-                        ) : j.group === 'knowledge' ? (
-                          <BookOpen />
-                        ) : (
-                          <Hammer />
-                        )}
+              {!game.discoveries?.length && (
+                <p className="help">
+                  Your compendium is empty. Gatherers explore plant life, and
+                  hunters explore the surrounding landscape.
+                </p>
+              )}
+              {['Plants', 'Water sources'].map((category) => {
+                const entries = compendium.filter(
+                  (e) =>
+                    e.category === category && game.discoveries?.includes(e.id),
+                );
+                if (!entries.length) return null;
+                return (
+                  <section key={category}>
+                    <h2>{category}</h2>
+                    {[...new Set(entries.map((e) => e.group))].map((group) => (
+                      <div key={group}>
+                        <h3>{group}</h3>
+                        <div className="research-grid">
+                          {entries
+                            .filter((e) => e.group === group)
+                            .map((e) => (
+                              <article
+                                className="tech-card complete"
+                                key={e.id}
+                              >
+                                <h3>{e.name}</h3>
+                                <p>{e.description}</p>
+                                <small>
+                                  Discovered by{' '}
+                                  {e.job === 'hunter' ? 'hunters' : 'gatherers'}
+                                </small>
+                              </article>
+                            ))}
+                        </div>
                       </div>
-                      <div className="job-description">
-                        <h3>
-                          {j.name}
-                          {(game.workers[j.id] || 0) > 0 && (
-                            <span
-                              className={
-                                blocked.includes(j.id)
-                                  ? 'job-state blocked'
-                                  : 'job-state'
-                              }
-                            >
-                              {blocked.includes(j.id)
-                                ? 'INPUT SHORTAGE'
-                                : 'WORKING'}
-                            </span>
-                          )}
-                        </h3>
-                        <p>{j.description}</p>
-                        <small>
-                          {Object.keys(j.input).length > 0 && (
-                            <>
-                              <span className="input-recipe">
-                                {recipe(j.input)}
-                              </span>{' '}
-                              →{' '}
-                            </>
-                          )}
-                          <span className="output-recipe">
-                            {recipe(j.output)}/s
-                          </span>
-                          <span className="per-worker">
-                            {' '}
-                            · per worker, before bonuses
-                          </span>
-                        </small>
-                      </div>
-                      <div className="stepper">
-                        <button
-                          disabled={!game.workers[j.id]}
-                          aria-label={`Remove ${j.name}`}
-                          onClick={() => act((g) => assign(g, j.id, -1))}
-                        >
-                          <Minus size={16} />
-                        </button>
-                        <span>{game.workers[j.id] || 0}</span>
-                        <button
-                          disabled={!ready || idle === 0}
-                          aria-label={`Assign ${j.name}`}
-                          onClick={() => act((g) => assign(g, j.id, 1))}
-                        >
-                          <Plus size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-              <div className="next-unlock">
-                <FlaskConical size={18} /> New jobs appear as you discover
-                technologies.
-              </div>
+                    ))}
+                  </section>
+                );
+              })}
             </TabsContent>
             <TabsContent value="research">
               <div className="list-heading">
                 <h2>Ideas that change everything</h2>
                 <span>Discoveries are permanent</span>
               </div>
-              <div className="research-grid">
-                {technologies.map((t) => {
-                  const done = game.tech.includes(t.id),
-                    available = t.requires.every((r) => game.tech.includes(r));
-                  return (
-                    <article
-                      className={`tech-card ${done ? 'complete' : ''}`}
-                      key={t.id}
-                    >
-                      <span className="eyebrow">{eras[t.era]}</span>
-                      <h3>
-                        {t.name}
-                        {done && ' ✓'}
-                      </h3>
-                      <p>{t.description}</p>
-                      <small>
-                        {!available
-                          ? `Requires ${t.requires.map((id) => technologies.find((x) => x.id === id)?.name).join(', ')}`
-                          : recipe(t.cost)}
-                      </small>
-                      <button
-                        disabled={
-                          done ||
-                          !available ||
-                          !Object.entries(t.cost).every(
-                            ([k, v]) => game.stock[k] >= v,
-                          )
-                        }
-                        onClick={() =>
-                          act(
-                            (g) => research(g, t.id),
-                            `${t.name} discovered. New possibilities await in your workforce.`,
-                          )
-                        }
-                      >
-                        {done
-                          ? 'Discovered'
-                          : !available
-                            ? 'Locked'
-                            : 'Research'}
-                        {!done && <ArrowRight size={16} />}
-                      </button>
-                    </article>
-                  );
-                })}
-              </div>
-            </TabsContent>
-            <TabsContent value="network">
-              <div className="list-heading">
-                <h2>Everything is connected</h2>
-                <span>From raw materials to village life</span>
-              </div>
-              <p className="network-intro">
-                Follow the connections from the forest and riverbank to your
-                first village.
-              </p>
-              {jobs
-                .filter((j) => Object.keys(j.input).length > 0)
-                .map((j) => (
-                  <div
-                    className={`chain ${unlocked(game, j.tech) ? '' : 'locked-chain'}`}
-                    key={j.id}
-                  >
-                    <div>
-                      {Object.keys(j.input).map((k) => (
-                        <span className="node" key={k}>
-                          {resources[k].symbol} {resources[k].name}
-                        </span>
-                      ))}
-                    </div>
-                    <ArrowRight />
-                    <div className="chain-job">
-                      {j.name}
-                      <small>
-                        {unlocked(game, j.tech)
-                          ? 'Available'
-                          : `Requires ${technologies.find((t) => t.id === j.tech)?.name}`}
-                      </small>
-                    </div>
-                    <ArrowRight />
-                    <div>
-                      {Object.keys(j.output).map((k) => (
-                        <span className="node result" key={k}>
-                          {resources[k].symbol} {resources[k].name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              <div className="help">
-                <strong>The compounding effect</strong>
-                <p>
-                  Tools improve all production by up to 100%. Clothing adds up
-                  to 25%. Controlled fire increases food production by 20%. Each
-                  stored pottery vessel adds 2 capacity to every resource.
+              {game.tech.length === 0 && (
+                <p className="help">
+                  Your village has not made any discoveries yet. Keep your
+                  people working and new ideas will emerge naturally.
                 </p>
+              )}
+              <div className="research-grid">
+                {technologies
+                  .filter((t) => game.tech.includes(t.id))
+                  .map((t) => {
+                    const done = game.tech.includes(t.id),
+                      available = t.requires.every((r) =>
+                        game.tech.includes(r),
+                      );
+                    return (
+                      <article
+                        className={`tech-card ${done ? 'complete' : ''}`}
+                        key={t.id}
+                      >
+                        <span className="eyebrow">{eras[t.era]}</span>
+                        <h3>
+                          {t.name}
+                          {done && ' ✓'}
+                        </h3>
+                        <p>{t.description}</p>
+                        <small>
+                          {!available
+                            ? `Requires ${t.requires.map((id) => technologies.find((x) => x.id === id)?.name).join(', ')}`
+                            : t.id === 'agriculture'
+                              ? 'Discovered through wild grain and fresh water'
+                              : `Produced over time: ${recipe(t.milestones)}`}
+                        </small>
+                        <span className="discovery-status">
+                          {done
+                            ? 'Discovered through village life'
+                            : available
+                              ? 'Emerging through everyday work'
+                              : 'Earlier discoveries needed'}
+                        </span>
+                      </article>
+                    );
+                  })}
               </div>
             </TabsContent>
           </Tabs>
         </section>
-        <aside className="right-rail">
-          <div className="section-label">ON THE HORIZON</div>
-          {current ? (
-            <article className="milestone">
-              <div className="eyebrow">NEXT DISCOVERY</div>
-              <FlaskConical className="milestone-icon" size={34} />
-              <h2>{current.name}</h2>
-              <p>{current.description}</p>
-              {Object.entries(current.cost).map(([k, v]) => (
-                <div className="goal-resource" key={k}>
-                  <div>
-                    <span>{resources[k].name}</span>
-                    <span>
-                      {fmt(Math.min(game.stock[k] || 0, v))} / {v}
-                    </span>
-                  </div>
-                  <Progress
-                    aria-label={`${resources[k].name} for ${current.name}`}
-                    value={Math.min(100, ((game.stock[k] || 0) / v) * 100)}
-                  />
-                </div>
-              ))}
-              <button
-                className="primary"
-                disabled={
-                  !Object.entries(current.cost).every(
-                    ([k, v]) => game.stock[k] >= v,
-                  )
-                }
-                onClick={() =>
-                  act(
-                    (g) => research(g, current.id),
-                    `${current.name} discovered!`,
-                  )
-                }
-              >
-                Discover {current.name}
-                <ArrowRight size={16} />
-              </button>
-            </article>
-          ) : (
-            <article className="milestone">
-              <h2>A village takes root</h2>
-              <p>
-                You have discovered every technology in this first chapter. Keep
-                growing your village and balancing its resources.
-              </p>
-            </article>
-          )}
-          <div className="section-label infrastructure-label">
-            GROW YOUR SETTLEMENT
-          </div>
-          {(['home', 'warehouse'] as const).map((k) => (
-            <article className="building" key={k}>
-              <div>
-                <h3>{k === 'home' ? 'Build a home' : 'Expand storage'}</h3>
-                <span>LEVEL {game.buildings[k]}</span>
-              </div>
-              <p>
-                {k === 'home'
-                  ? '+5 population capacity'
-                  : '+500 capacity for every resource'}
-              </p>
-              <small>{recipe(buildingCost(game, k))}</small>
-              <button
-                disabled={
-                  !Object.entries(buildingCost(game, k)).every(
-                    ([r, v]) => game.stock[r] >= v,
-                  )
-                }
-                onClick={() => act((g) => build(g, k))}
-              >
-                Build <Plus size={16} />
-              </button>
-            </article>
-          ))}
-          <div className="field-notes">
-            <span className="eyebrow">FIELD NOTES</span>
-            <p>“A sharpened stone. A planted seed. A place to call home.”</p>
-            <span>Great beginnings are built together.</span>
-          </div>
-        </aside>
       </main>
       <footer>
         CIV IDLE <span>The first chapter of civilization.</span>

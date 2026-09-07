@@ -2,11 +2,11 @@
 
 A browser idle game focused entirely on the dawn of civilization.
 
-Start with five people. Assign hunters, gatherers, woodcutters, stone collectors, tool makers and thinkers. Discover controlled fire, early farming, pottery, hide working and village traditions. Build homes and storage; redistribute workers freely.
+Start paused with five people and no food. Assign hunters and gatherers, then unpause to discover resources, professions and early technologies through normal gameplay. Organise a draggable network of connected concepts as your settlement grows.
 
-- Nine connected resources and eleven jobs.
+- Gathering, hunting, fishing, farming, crafts, shelters and animal keeping.
 - Tools and clothing improve production; pottery expands storage.
-- Everyone consumes food. Shortages slow non-food work without killing settlers.
+- Automatic population growth; non-food workers need positive food production.
 - Device-local autosave and up to eight hours of offline progress.
 
 ## Development
@@ -17,7 +17,7 @@ Use Node.js 22 (22.17.0 tested). Node 24 on Windows currently encounters a nativ
 npm ci
 npm run dev
 npm run build
-node --experimental-strip-types --test tests/game.test.mjs
+npm test
 npx tsc --noEmit
 ```
 
@@ -28,3 +28,9 @@ npx tsc --noEmit
 The GitHub Pages workflow builds the same game under `/Civ-Idle/`. Set repository Settings → Pages → Source to **GitHub Actions**. Sites deployment uses the root path.
 
 Saves are separate for each site/browser. Clearing browser data removes the save. Balancing is prototype-level; the entire chapter is playable.
+
+## Desktop / future Steam release
+
+The browser game now also has a standalone desktop packaging path. Run `npm run desktop:build`, then `npm run desktop:play` with Node 22. `npm run desktop:package` creates a local distributable folder. See [desktop/README.md](desktop/README.md) for architecture, saves, packaging, and the remaining Steam release work. This does not publish anything.
+
+Discoveries emerge from exploration, production and activity milestones, including offline work. Undiscovered concepts remain hidden. Tools gradually wear out, while craftspeople maintain modest reserves. Existing saves preserve unlocked discoveries.
